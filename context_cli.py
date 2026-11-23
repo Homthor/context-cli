@@ -6,6 +6,7 @@ import pathspec
 import questionary
 
 DEFAULT_IGNORE_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build'}
+IGNORE_FILES = {'context.txt'}
 IGNORE_EXTS = {
     '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.pdf',
     '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.pyc', '.lock'
@@ -41,6 +42,9 @@ def scan_files(root_dir: str, encoding_name: str = "o200k_base"):
         dirnames[:] = sorted(filtered_dirs)
 
         for filename in sorted(filenames):
+            if filename in IGNORE_FILES:
+                continue
+
             if any(filename.lower().endswith(ext) for ext in IGNORE_EXTS):
                 continue
 
@@ -56,7 +60,7 @@ def scan_files(root_dir: str, encoding_name: str = "o200k_base"):
                 continue
 
             tokens = len(enc.encode(content, disallowed_special=()))
-            dir_key = os.path.dirname(rel_path)  # "" для корня проекта
+            dir_key = os.path.dirname(rel_path)
             files_data.append({
                 "dir": dir_key,
                 "rel_path": rel_path,
@@ -69,7 +73,6 @@ def scan_files(root_dir: str, encoding_name: str = "o200k_base"):
 
 
 def get_dir_ancestors(dir_key: str) -> list[str]:
-    """Возвращает саму папку и все её родительские папки (кроме корня '')."""
     if not dir_key:
         return [""]
     parts = dir_key.split('/')
@@ -77,14 +80,12 @@ def get_dir_ancestors(dir_key: str) -> list[str]:
 
 
 def is_file_included(file_dir: str, selected_dirs: set[str]) -> bool:
-    """Проверяет, выбрана ли папка файла вместе со всеми её родительскими папками."""
     if file_dir == "":
         return "" in selected_dirs
     return all(ancestor in selected_dirs for ancestor in get_dir_ancestors(file_dir))
 
 
 def main():
-    # 1. Выбор папки проекта (можно передать аргументом: ctx ./path)
     default_dir = sys.argv[1] if len(sys.argv) > 1 else "."
     target_dir = questionary.path(
         "Выберите папку проекта (нажмите Enter для текущей):",
@@ -103,7 +104,6 @@ def main():
         print("Подходящих текстовых файлов не найдено.")
         sys.exit(0)
 
-    # Собираем статистику по всем папкам (включая промежуточные без прямых файлов)
     all_dirs = set()
     direct_files_map = defaultdict(list)
 
@@ -115,7 +115,6 @@ def main():
     total_all = sum(f["tokens"] for f in files_data)
     print(f"Найдено папок: {len(all_dirs)} | Файлов: {len(files_data)} | Всего токенов: {total_all:,}\n")
 
-    # 2. Выбор папок (с подсчетом веса всей ветки с подпапками)
     dir_choices = []
     for dir_key in sorted(all_dirs):
         if dir_key == "":
@@ -150,8 +149,6 @@ def main():
         sys.exit(0)
 
     selected_dirs = set(selected_dirs_list)
-
-    # Оставляем только те файлы, у которых не снята ни одна родительская папка
     selected_files = [
         f for f in files_data
         if is_file_included(f["dir"], selected_dirs)
@@ -164,7 +161,6 @@ def main():
     dir_tokens_total = sum(f["tokens"] for f in selected_files)
     print(f"\nВ выбранных ветках: {len(selected_files)} файлов (~{dir_tokens_total:,} токенов)")
 
-    # 3. Опциональное уточнение по отдельным файлам
     if questionary.confirm("Уточнить список отдельных файлов внутри выбранных папок?", default=False).ask():
         file_choices = [
             questionary.Choice(
@@ -183,12 +179,10 @@ def main():
             print("Ни один файл не выбран. Выход.")
             sys.exit(0)
 
-    # 4. Итоговая статистика
     final_tokens = sum(f["tokens"] for f in selected_files)
     print(f"\nИтого выбрано файлов: {len(selected_files)}")
     print(f"Итого токенов (~): {final_tokens:,}\n")
 
-    # 5. Сохранение результата
     if questionary.confirm("Сохранить выбранные файлы в один текстовый файл?", default=True).ask():
         output_file = questionary.text(
             "Имя выходного файла:",
@@ -196,13 +190,15 @@ def main():
         ).ask()
 
         if output_file:
+            output_abs = os.path.abspath(output_file)
             chunks = [
                 f'<file path="{f["rel_path"]}">\n{f["content"]}\n</file>\n'
                 for f in selected_files
+                if f["abs_path"] != output_abs
             ]
             with open(output_file, 'w', encoding='utf-8') as out:
                 out.write("\n".join(chunks))
-            print(f"\nГотово! Контекст сохранен в {os.path.abspath(output_file)}")
+            print(f"\nГотово! Контекст сохранен в {output_abs}")
 
 
 if __name__ == "__main__":
