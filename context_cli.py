@@ -11,12 +11,14 @@ IGNORE_EXTS = {
     '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.pyc', '.lock'
 }
 
+
 def load_gitignore(root_dir: str) -> pathspec.PathSpec | None:
     gitignore_path = os.path.join(root_dir, '.gitignore')
     if not os.path.exists(gitignore_path):
         return None
     with open(gitignore_path, 'r', encoding='utf-8') as f:
         return pathspec.PathSpec.from_lines('gitwildmatch', f)
+
 
 def scan_files(root_dir: str, encoding_name: str = "o200k_base"):
     root_dir = os.path.abspath(root_dir)
@@ -65,11 +67,28 @@ def scan_files(root_dir: str, encoding_name: str = "o200k_base"):
 
     return files_data
 
+
+def get_dir_ancestors(dir_key: str) -> list[str]:
+    """Возвращает саму папку и все её родительские папки (кроме корня '')."""
+    if not dir_key:
+        return [""]
+    parts = dir_key.split('/')
+    return ['/'.join(parts[:i]) for i in range(1, len(parts) + 1)]
+
+
+def is_file_included(file_dir: str, selected_dirs: set[str]) -> bool:
+    """Проверяет, выбрана ли папка файла вместе со всеми её родительскими папками."""
+    if file_dir == "":
+        return "" in selected_dirs
+    return all(ancestor in selected_dirs for ancestor in get_dir_ancestors(file_dir))
+
+
 def main():
-    # 1. Выбор папки проекта
+    # 1. Выбор папки проекта (можно передать аргументом: ctx ./path)
+    default_dir = sys.argv[1] if len(sys.argv) > 1 else "."
     target_dir = questionary.path(
-        "Выберите папку проекта:",
-        default=".",
+        "Выберите папку проекта (нажмите Enter для текущей):",
+        default=default_dir,
         only_directories=True
     ).ask()
 
@@ -84,41 +103,66 @@ def main():
         print("Подходящих текстовых файлов не найдено.")
         sys.exit(0)
 
-    # Группируем файлы по папкам
-    dirs_map = defaultdict(list)
+    # Собираем статистику по всем папкам (включая промежуточные без прямых файлов)
+    all_dirs = set()
+    direct_files_map = defaultdict(list)
+
     for f in files_data:
-        dirs_map[f["dir"]].append(f)
+        direct_files_map[f["dir"]].append(f)
+        for anc in get_dir_ancestors(f["dir"]):
+            all_dirs.add(anc)
 
     total_all = sum(f["tokens"] for f in files_data)
-    print(f"Найдено папок: {len(dirs_map)} | Файлов: {len(files_data)} | Всего токенов: {total_all:,}\n")
+    print(f"Найдено папок: {len(all_dirs)} | Файлов: {len(files_data)} | Всего токенов: {total_all:,}\n")
 
-    # 2. Выбор папок целиком
+    # 2. Выбор папок (с подсчетом веса всей ветки с подпапками)
     dir_choices = []
-    for dir_key in sorted(dirs_map.keys()):
-        dir_files = dirs_map[dir_key]
-        dir_tokens = sum(f["tokens"] for f in dir_files)
-        display_name = "./ (корень проекта)" if dir_key == "" else f"{dir_key}/"
+    for dir_key in sorted(all_dirs):
+        if dir_key == "":
+            branch_files = direct_files_map[""]
+            display_name = "./ (только файлы в корне)"
+        else:
+            prefix = dir_key + "/"
+            branch_files = [
+                f for f in files_data
+                if f["dir"] == dir_key or f["dir"].startswith(prefix)
+            ]
+            depth = dir_key.count('/')
+            indent = "  " * depth
+            display_name = f"{indent}{dir_key}/"
+
+        branch_tokens = sum(f["tokens"] for f in branch_files)
         dir_choices.append(
             questionary.Choice(
-                title=f"[{dir_tokens:>7,} tok | {len(dir_files):>3} файл.] {display_name}",
+                title=f"[{branch_tokens:>7,} tok | {len(branch_files):>3} файл.] {display_name}",
                 value=dir_key,
                 checked=True
             )
         )
 
-    selected_dirs = questionary.checkbox(
-        "Шаг 1. Выберите нужные папки (Пробел — вкл/выкл, 'a' — все, Enter — далее):",
+    selected_dirs_list = questionary.checkbox(
+        "Шаг 1. Выберите нужные папки (снятие родителя исключит его подпапки):",
         choices=dir_choices
     ).ask()
 
-    if not selected_dirs:
+    if not selected_dirs_list:
         print("Ни одна папка не выбрана. Выход.")
         sys.exit(0)
 
-    # Собираем файлы из выбранных папок
-    selected_files = [f for d in selected_dirs for f in dirs_map[d]]
+    selected_dirs = set(selected_dirs_list)
+
+    # Оставляем только те файлы, у которых не снята ни одна родительская папка
+    selected_files = [
+        f for f in files_data
+        if is_file_included(f["dir"], selected_dirs)
+    ]
+
+    if not selected_files:
+        print("После исключения родительских папок не осталось ни одного файла. Выход.")
+        sys.exit(0)
+
     dir_tokens_total = sum(f["tokens"] for f in selected_files)
-    print(f"\nВ выбранных папках: {len(selected_files)} файлов (~{dir_tokens_total:,} токенов)")
+    print(f"\nВ выбранных ветках: {len(selected_files)} файлов (~{dir_tokens_total:,} токенов)")
 
     # 3. Опциональное уточнение по отдельным файлам
     if questionary.confirm("Уточнить список отдельных файлов внутри выбранных папок?", default=False).ask():
@@ -159,6 +203,7 @@ def main():
             with open(output_file, 'w', encoding='utf-8') as out:
                 out.write("\n".join(chunks))
             print(f"\nГотово! Контекст сохранен в {os.path.abspath(output_file)}")
+
 
 if __name__ == "__main__":
     try:
