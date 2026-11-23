@@ -11,6 +11,7 @@ IGNORE_EXTS = {
     '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.pdf',
     '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.pyc', '.lock'
 }
+GENERATED_MARKER = "<!-- ctx-generated -->"
 
 
 def load_gitignore(root_dir: str) -> pathspec.PathSpec | None:
@@ -57,6 +58,10 @@ def scan_files(root_dir: str, encoding_name: str = "o200k_base"):
                 with open(filepath, 'r', encoding='utf-8') as f:
                     content = f.read()
             except (UnicodeDecodeError, PermissionError, OSError):
+                continue
+
+            # Пропускаем файлы, ранее сгенерированные этим скриптом (независимо от их имени)
+            if content.startswith(GENERATED_MARKER):
                 continue
 
             tokens = len(enc.encode(content, disallowed_special=()))
@@ -197,7 +202,7 @@ def main():
                 if f["abs_path"] != output_abs
             ]
             with open(output_file, 'w', encoding='utf-8') as out:
-                out.write("\n".join(chunks))
+                out.write(f"{GENERATED_MARKER}\n" + "\n".join(chunks))
             print(f"\nГотово! Контекст сохранен в {output_abs}")
 
 
